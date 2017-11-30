@@ -50,13 +50,8 @@ l = inp
 l = Conv2D(8, (5, 5), strides=(2, 2), activation='relu')(l)  # common conv layer
 l = BatchNormalization()(l)
 l = ConvertToCaps()(l)
-l = Dropout(rate=0.1)(l)
 l = Conv2DCaps(4, 4, (3, 3), (2, 2), r_num=1)(l)
-l = BatchNormalization()(l)
-l = Dropout(rate=0.1)(l)
 l = Conv2DCaps(2, 6, (3, 3), (2, 2), r_num=1)(l)
-l = BatchNormalization()(l)
-l = Dropout(rate=0.1)(l)
 l = FlattenCaps()(l)  # transform to a dense caps layer
 l = DenseCaps(10, 8, r_num=3)(l)
 l = CapsToScalars()(l)
@@ -66,7 +61,7 @@ model = Model(inputs=inp, outputs=l)
 model.summary()
 
 def custom_objective(y_true, y_pred):
-    return y_true * K.clip(0.8 - y_pred, 0, 1) ** 2 + 0.5 * (1 - y_true) * K.clip(y_pred - 0.3, 0, 1) ** 2
+    return K.sum(y_true * K.clip(0.8 - y_pred, 0, 1) ** 2 + 0.5 * (1 - y_true) * K.clip(y_pred - 0.3, 0, 1) ** 2)
 
 optimizer = optimizers.Adam(lr=0.001)
 model.compile(loss=custom_objective, #'categorical_crossentropy',  # 'mean_squared_error',
@@ -79,7 +74,8 @@ y_train = y_train[:57600]
 model.fit(x_train, y_train,
           batch_size=batch_size, epochs=num_epochs, initial_epoch=0,
           verbose=1, validation_split=0.09,
-          callbacks=[ModelCheckpoint('cc_weights.{epoch:02d}-{loss:.4f}-{loss:.4f}-{acc:.4f}-{val_loss:.4f}-{val_acc:.4f}.hdf5',
+          callbacks=[
+                     ModelCheckpoint('cc_weights.{epoch:02d}-{loss:.4f}-{loss:.4f}-{acc:.4f}-{val_loss:.4f}-{val_acc:.4f}.hdf5',
                                      monitor='loss,acc,val_loss,val_acc', verbose=0),
                      #TensorBoard(log_dir='/opt/notebooks/logs/tensorflow/',
                      #            histogram_freq=1,
