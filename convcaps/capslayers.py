@@ -174,102 +174,115 @@ class Conv2DCaps(Layer):
             wi = K.reshape(wi, (self.kernel_size[0], self.kernel_size[1],
                                 self.ch_i*self.kernel_size[0]*self.kernel_size[1]*
                                 self.ch_j*self.n_j, self.ch_j*self.n_j))
-            b = K.zeros((bt, self.h_i*self.w_i*self.ch_i,
-                         self.kernel_size[0]*self.kernel_size[1]*self.ch_j))
 
             wt = K.permute_dimensions(self.w, [2, 3, 0, 1, 4, 5])
             wt = K.reshape(wt, (self.ch_i, 1, 1, self.n_i, -1))
 
-            ul = []
-            for i in range(self.ch_i):
-                ul.append(K.conv2d(inputs[:, :, :, i], wt[i],
-                                   data_format='channels_last'))
-            u = K.stack(ul, axis=3)
-
-            u_wo_g = K.stop_gradient(u)
-
-            j_all = self.h_j*self.w_j*self.ch_j
-            j_add = j_all - self.kernel_size[0]*self.kernel_size[1]*self.ch_j
-
-            for r in range(self.r_num):
-                #c = ((K.softmax(b) - 0.9) * 10) * K.int_shape(b)[-1] * 10
-                ex = K.exp(b * 8)
-                c = ex / ((K.sum(ex, axis=-1, keepdims=True) + K.epsilon()) +
-                          j_add) * j_all
-
-                c = K.expand_dims(c)
-                c = K.stop_gradient(c)
-                if r == self.r_num - 1:
-                    cu = c * K.reshape(u, (-1, self.h_i*self.w_i*self.ch_i,
-                                           self.kernel_size[0]*
-                                           self.kernel_size[1]*
-                                           self.ch_j, self.n_j))
-                else:
-                    cu = c * K.reshape(u_wo_g, (-1, self.h_i*self.w_i*self.ch_i,
-                                                self.kernel_size[0]*
-                                                self.kernel_size[1]*self.ch_j,
-                                                self.n_j))
-
-                cu = K.reshape(cu, (-1, self.h_i, self.w_i,
-                                    self.ch_i*self.kernel_size[0]*
-                                    self.kernel_size[1]*self.ch_j*self.n_j))
-                s = K.conv2d(cu, wi, data_format='channels_last', strides=self.strides)
-                v = squeeze(K.reshape(s, (-1, self.h_j*self.w_j*self.ch_j,
-                                          self.n_j)))
-                v = K.reshape(v, (-1, self.h_j, self.w_j, self.ch_j*self.n_j))
-
-                if r == self.r_num - 1:
-                    break
-
-                v = K.stop_gradient(v)
-                ph, pw = self.kernel_size[0] - 1, self.kernel_size[1] - 1
-
-                if self.strides == (1, 1):
-                    va = v
-                else:
-                    zr = K.zeros((bt, self.w_j, self.ch_j * self.n_j))
-                    zc = K.zeros((bt, self.ah_j, self.ch_j * self.n_j))
-                    rl = []
-
-                    for r in range(self.ah_j):
-                        rl.append(zr if r % ph else v[:, r // ph])
-                    rs = K.stack(rl, axis=1)
-                    cl = []
-                    for c in range(self.aw_j):
-                        cl.append(zc if c % pw else rs[:, :, c // pw])
-                    va = K.stack(cl, axis=-2)
-
-                va = K.spatial_2d_padding(va, ((ph, ph), (pw, pw)),
-                                          data_format='channels_last')
-
-                vp = tf.extract_image_patches(va, (1, self.kernel_size[0],
-                                                   self.kernel_size[1], 1),
-                                              (1, 1, 1, 1),
-                                              (1, 1, 1, 1), 'VALID')
-                vp = K.reshape(vp, (-1, self.h_i*self.w_i, self.kernel_size[0]*
-                                    self.kernel_size[1],
-                                    self.ch_j, 1, self.n_j))
-                vp = K.reverse(vp, axes=[2])
-
-                vp = K.reshape(vp, (-1, self.h_i*self.w_i,
-                                    self.kernel_size[0]*
-                                    self.kernel_size[1]*
-                                    self.ch_j, 1, self.n_j))
-
-                u_wo_g = K.reshape(u_wo_g, (-1, self.h_i*self.w_i, self.ch_i,
-                                            self.kernel_size[0]*
-                                            self.kernel_size[1]*
-                                            self.ch_j, self.n_j, 1))
-                al = []
+            bp = bt
+            def fn(binputs):
+                binputs = K.reshape(binputs, (-1, self.h_i, self.w_i, self.ch_i, self.n_i))
+                ul = []
                 for i in range(self.ch_i):
-                    al.append(K.batch_dot(vp, u_wo_g[:, :, i]))
-                a = K.stack(al, axis=2)
-                a = K.reshape(a, (-1, self.h_i*self.w_i*self.ch_i,
-                                  self.kernel_size[0]*
-                                  self.kernel_size[1]*self.ch_j))
+                    ul.append(K.conv2d(binputs[:, :, :, i], wt[i],
+                                       data_format='channels_last'))
+                u = K.stack(ul, axis=3)
 
-                #b = K.update_add(b, a)  # WTF? It yields a result different from b = b + a
-                b = b + a
+                u_wo_g = K.stop_gradient(u)
+
+                j_all = self.h_j*self.w_j*self.ch_j
+                j_add = j_all - self.kernel_size[0]*self.kernel_size[1]*self.ch_j
+
+                b = tf.constant_initializer(0.)((bp, self.h_i*self.w_i*self.ch_i,
+                             self.kernel_size[0]*self.kernel_size[1]*self.ch_j))
+
+                for r in range(self.r_num):
+                    #c = ((K.softmax(b) - 0.9) * 10) * K.int_shape(b)[-1] * 10
+                    ex = K.exp(b * 8)
+                    c = ex / ((K.sum(ex, axis=-1, keepdims=True) + K.epsilon()) +
+                              j_add) * j_all
+
+                    c = K.expand_dims(c)
+                    c = K.stop_gradient(c)
+                    if r == self.r_num - 1:
+                        cu = c * K.reshape(u, (-1, self.h_i*self.w_i*self.ch_i,
+                                               self.kernel_size[0]*
+                                               self.kernel_size[1]*
+                                               self.ch_j, self.n_j))
+                    else:
+                        cu = c * K.reshape(u_wo_g, (-1, self.h_i*self.w_i*self.ch_i,
+                                                    self.kernel_size[0]*
+                                                    self.kernel_size[1]*self.ch_j,
+                                                    self.n_j))
+
+                    cu = K.reshape(cu, (-1, self.h_i, self.w_i,
+                                        self.ch_i*self.kernel_size[0]*
+                                        self.kernel_size[1]*self.ch_j*self.n_j))
+                    s = K.conv2d(cu, wi, data_format='channels_last', strides=self.strides)
+                    v = squeeze(K.reshape(s, (-1, self.h_j*self.w_j*self.ch_j,
+                                              self.n_j)))
+                    v = K.reshape(v, (-1, self.h_j, self.w_j, self.ch_j*self.n_j))
+
+                    if r == self.r_num - 1:
+                        break
+
+                    v = K.stop_gradient(v)
+                    ph, pw = self.kernel_size[0] - 1, self.kernel_size[1] - 1
+
+                    if self.strides == (1, 1):
+                        va = v
+                    else:
+                        zr = K.zeros((bt, self.w_j, self.ch_j * self.n_j))
+                        zc = K.zeros((bt, self.ah_j, self.ch_j * self.n_j))
+                        rl = []
+
+                        for r in range(self.ah_j):
+                            rl.append(zr if r % ph else v[:, r // ph])
+                        rs = K.stack(rl, axis=1)
+                        cl = []
+                        for c in range(self.aw_j):
+                            cl.append(zc if c % pw else rs[:, :, c // pw])
+                        va = K.stack(cl, axis=-2)
+
+                    va = K.spatial_2d_padding(va, ((ph, ph), (pw, pw)),
+                                              data_format='channels_last')
+
+                    vp = tf.extract_image_patches(va, (1, self.kernel_size[0],
+                                                       self.kernel_size[1], 1),
+                                                  (1, 1, 1, 1),
+                                                  (1, 1, 1, 1), 'VALID')
+                    vp = K.reshape(vp, (-1, self.h_i*self.w_i, self.kernel_size[0]*
+                                        self.kernel_size[1],
+                                        self.ch_j, 1, self.n_j))
+                    vp = K.reverse(vp, axes=[2])
+
+                    vp = K.reshape(vp, (-1, self.h_i*self.w_i,
+                                        self.kernel_size[0]*
+                                        self.kernel_size[1]*
+                                        self.ch_j, 1, self.n_j))
+
+                    u_wo_g = K.reshape(u_wo_g, (-1, self.h_i*self.w_i, self.ch_i,
+                                                self.kernel_size[0]*
+                                                self.kernel_size[1]*
+                                                self.ch_j, self.n_j, 1))
+                    al = []
+                    for i in range(self.ch_i):
+                        al.append(K.batch_dot(vp, u_wo_g[:, :, i]))
+                    a = K.stack(al, axis=2)
+                    a = K.reshape(a, (-1, self.h_i*self.w_i*self.ch_i,
+                                      self.kernel_size[0]*
+                                      self.kernel_size[1]*self.ch_j))
+
+                    #b = K.update_add(b, a)  # WTF? It yields a result different from b = b + a
+                    b = b + a
+
+                return v
+
+
+            finputs = K.reshape(inputs, (bt // bp, bp, self.h_i, self.w_i, self.ch_i, self.n_i))
+            v = fn(finputs)
+            #v = tf.map_fn(fn, finputs,
+            #              parallel_iterations=100, back_prop=True,
+            #              infer_shape=True)
 
             outputs = v
             outputs = K.reshape(outputs, (-1, self.h_j, self.w_j,
