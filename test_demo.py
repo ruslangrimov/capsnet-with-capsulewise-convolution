@@ -6,6 +6,7 @@ Created on Sat Nov 25 16:38:24 2017
 
 import pytest
 from numpy.testing import assert_allclose
+import convcaps.capslayers
 from convcaps.capslayers import DenseCaps, Conv2DCaps
 from naive import do_routing
 import numpy as np
@@ -42,7 +43,8 @@ def test_dense(r_num):
 
 @pytest.mark.parametrize("r_num", [1, 3])
 @pytest.mark.parametrize("strides", [(1, 1), (2, 2)])
-def test_conv(r_num, strides):
+@pytest.mark.parametrize("useGPU", [False, True])
+def test_conv(r_num, strides, useGPU):
     bt = 8
     h_i, w_i = 7, 7
     ch_i = 3
@@ -73,6 +75,7 @@ def test_conv(r_num, strides):
 
     nv = do_routing(rx, ew, r_num)
 
+    convcaps.capslayers.useGPU = useGPU
     l = Conv2DCaps(ch_j, n_j, kernel_size=(kh, kw), strides=strides, r_num=r_num,
                    kernel_initializer=initializers.Constant(w))
 
