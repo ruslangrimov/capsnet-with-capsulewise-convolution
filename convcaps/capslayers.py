@@ -20,6 +20,7 @@ import tensorflow as tf
 
 cf = K.image_data_format() == 'channels_first'
 
+useGPU = False
 
 def squeeze(s):
     sq = K.sum(K.square(s), axis=-1, keepdims=True)
@@ -77,6 +78,7 @@ class Conv2DCaps(Layer):
                  kernel_size=(3, 3),
                  strides=(1, 1),
                  r_num=1,
+                 b_alphas=[8, 8, 8],
                  padding='valid',
                  data_format='channels_last',
                  dilation_rate=(1, 1),
@@ -93,6 +95,7 @@ class Conv2DCaps(Layer):
         self.kernel_size = conv_utils.normalize_tuple(kernel_size, rank, 'kernel_size')
         self.strides = conv_utils.normalize_tuple(strides, rank, 'strides')
         self.r_num = r_num
+        self.b_alphas = b_alphas
         self.padding = conv_utils.normalize_padding('valid')
         self.data_format = conv_utils.normalize_data_format('channels_last')
         self.dilation_rate = (1, 1)
@@ -124,12 +127,6 @@ class Conv2DCaps(Layer):
                               stride=1,
                               dilation=self.dilation_rate[i]) for i in (0, 1)]
 
-        # self.ah_j = (self.h_j - 1) * self.strides[0] + 1
-        # self.aw_j = (self.w_j - 1) * self.strides[1] + 1
-
-        #print((self.h_i, self.w_i), (self.h_j, self.w_j),
-        #      (self.ah_j, self.aw_j))
-
         self.w_shape = self.kernel_size + (self.ch_i, self.n_i,
                                            self.ch_j, self.n_j)
 
@@ -158,131 +155,150 @@ class Conv2DCaps(Layer):
                                           self.ch_j, self.n_j))))
 
         else:
-            inputsr = K.reshape(inputs, (-1, self.h_i * self.w_i * self.ch_i * self.n_i))
-            bt = K.int_shape(inputsr)[0]
+            bt = K.int_shape(inputs)[0]
+            ksz = self.kernel_size[0]*self.kernel_size[1]
 
-            wi = np.zeros((self.kernel_size[0], self.kernel_size[1], self.ch_i,
-                           self.kernel_size[0], self.kernel_size[1], self.ch_j,
-                           self.n_j, self.ch_j, self.n_j))
-            for r in range(self.kernel_size[0]):
-                for c in range(self.kernel_size[1]):
-                    for chj in range(self.ch_j):
-                        for nj in range(self.n_j):
-                            wi[r, c, :, r, c, chj, nj, chj, nj] = 1.0
+            xr = K.reshape(inputs, (-1, self.h_i, self.w_i,
+                                    self.ch_i * self.n_i))
 
-            wi = K.constant(wi)
-            wi = K.reshape(wi, (self.kernel_size[0], self.kernel_size[1],
-                                self.ch_i*self.kernel_size[0]*self.kernel_size[1]*
-                                self.ch_j*self.n_j, self.ch_j*self.n_j))
+            pt = tf.extract_image_patches(xr, (1,)+self.kernel_size+(1,),
+                                          (1,)+self.strides+(1,),
+                                          (1, 1, 1, 1,),
+                                          'VALID')
 
-            wt = K.permute_dimensions(self.w, [2, 3, 0, 1, 4, 5])
-            wt = K.reshape(wt, (self.ch_i, 1, 1, self.n_i, -1))
+            pt = K.reshape(pt, (-1, ksz * self.ch_i, self.n_i))
 
-            bp = bt
-            def fn(binputs):
-                binputs = K.reshape(binputs, (-1, self.h_i, self.w_i, self.ch_i, self.n_i))
-                ul = []
-                for i in range(self.ch_i):
-                    ul.append(K.conv2d(binputs[:, :, :, i], wt[i],
-                                       data_format='channels_last'))
-                u = K.stack(ul, axis=3)
+            wr = K.reshape(self.w, (ksz * self.ch_i, self.n_i,
+                                    self.ch_j * self.n_j))
 
-                u_wo_g = K.stop_gradient(u)
+            global useGPU
 
-                j_all = self.h_j*self.w_j*self.ch_j
-                j_add = j_all - self.kernel_size[0]*self.kernel_size[1]*self.ch_j
+            bp = bt // 2 if useGPU else 2
+
+            def rt(ptb):
+                ptb = K.reshape(ptb, (-1, ksz * self.ch_i, self.n_i))
+
+                if useGPU:
+                    ub = tf.einsum('bin,inj->bij', ptb, wr)
+                else:
+                    ul = []
+                    for i in range(ksz * self.ch_i):
+                        ul.append(K.dot(ptb[:, i], wr[i]))
+                    ub = K.stack(ul, axis=1)
 
                 b = tf.constant_initializer(0.)((bp, self.h_i*self.w_i*self.ch_i,
-                             self.kernel_size[0]*self.kernel_size[1]*self.ch_j))
+                                           ksz * self.ch_j))
+
+                j_all = self.h_j*self.w_j*self.ch_j
+                j_add = j_all - ksz * self.ch_j
 
                 for r in range(self.r_num):
-                    #c = ((K.softmax(b) - 0.9) * 10) * K.int_shape(b)[-1] * 10
-                    ex = K.exp(b * 8)
+                    ex = K.exp(b * self.b_alphas[r])
                     c = ex / ((K.sum(ex, axis=-1, keepdims=True) + K.epsilon()) +
                               j_add) * j_all
-
-                    c = K.expand_dims(c)
+                    c = K.reshape(c, (-1, self.h_i, self.w_i, self.ch_i *
+                                      ksz * self.ch_j))
                     c = K.stop_gradient(c)
-                    if r == self.r_num - 1:
-                        cu = c * K.reshape(u, (-1, self.h_i*self.w_i*self.ch_i,
-                                               self.kernel_size[0]*
-                                               self.kernel_size[1]*
-                                               self.ch_j, self.n_j))
+
+                    pc = tf.extract_image_patches(c, (1,)+self.kernel_size+(1,),
+                                                      (1,)+self.strides+(1,),
+                                                      (1, 1, 1, 1,),
+                                                      'VALID')
+                    pc = K.reshape(pc, (-1, self.h_j, self.w_j, ksz,
+                                        self.ch_i, self.kernel_size[0]*
+                                        self.kernel_size[1], self.ch_j))
+                    pcl = []
+                    for n in range(ksz):
+                        pcl.append(pc[:, :, :, n, :, self.kernel_size[0]*
+                                      self.kernel_size[1]-1 - n])
+                    pcc = K.stack(pcl, axis=3)
+
+                    if useGPU:
+                        pcc = K.reshape(pcc, (-1, self.h_j * self.w_j* ksz *
+                                              self.ch_i * self.ch_j, 1))
+                        ub = K.reshape(ub, (bp, -1, self.n_j))
+                        cu = pcc * ub
                     else:
-                        cu = c * K.reshape(u_wo_g, (-1, self.h_i*self.w_i*self.ch_i,
-                                                    self.kernel_size[0]*
-                                                    self.kernel_size[1]*self.ch_j,
-                                                    self.n_j))
+                        pcc = K.reshape(pcc, (-1, 1))
+                        ub = K.reshape(ub, (-1, self.n_j, 1))
+                        cul = []
+                        for n in range(self.n_j):
+                            cul.append(ub[:, n] * pcc)
+                        cu = K.stack(cul, axis=-2)
 
-                    cu = K.reshape(cu, (-1, self.h_i, self.w_i,
-                                        self.ch_i*self.kernel_size[0]*
-                                        self.kernel_size[1]*self.ch_j*self.n_j))
-                    s = K.conv2d(cu, wi, data_format='channels_last', strides=self.strides)
-                    v = squeeze(K.reshape(s, (-1, self.h_j*self.w_j*self.ch_j,
-                                              self.n_j)))
-                    v = K.reshape(v, (-1, self.h_j, self.w_j, self.ch_j*self.n_j))
+                    cu = K.reshape(cu, (-1, self.h_j*self.w_j,
+                                        ksz*self.ch_i, self.ch_j, self.n_j))
 
+                    s = K.sum(cu, axis=-3)
+
+                    v = squeeze(s)
                     if r == self.r_num - 1:
                         break
 
                     v = K.stop_gradient(v)
-                    ph, pw = self.kernel_size[0] - 1, self.kernel_size[1] - 1
+
+                    ubr = K.reshape(K.stop_gradient(ub), (-1, self.h_j*self.w_j,
+                                         ksz*self.ch_i, self.ch_j, self.n_j))
+
+                    if True:
+                    #if useGPU:
+                        a = tf.einsum('bjck,bjick->bjic', v, ubr)
+                    else:
+                        al = []
+                        for i in range(ksz * self.ch_i):
+                            al.append(K.batch_dot(K.reshape(ubr[:, :, i], (-1, self.h_j*self.w_j*self.ch_j, 1, self.n_j)),
+                                                  K.reshape(v, (-1, self.h_j*self.w_j*self.ch_j, self.n_j, 1))))
+                        a = K.stack(al, axis=1)
+                        a = K.reshape(a, (-1, ksz*self.ch_i, self.h_j*self.w_j,
+                                          self.ch_j))
+                        a = K.permute_dimensions(a, [0, 2, 1, 3])
+
+                    ph, pw = 2, 2
+                    a = K.reshape(a, (-1, self.h_j, self.w_j,
+                                      ksz * self.ch_i * self.ch_j))
 
                     if self.strides == (1, 1):
-                        va = v
+                        aa = a
                     else:
-                        zr = K.zeros((bt, self.w_j, self.ch_j * self.n_j))
-                        zc = K.zeros((bt, self.ah_j, self.ch_j * self.n_j))
+                        zr = tf.constant_initializer(0.)((bp, self.w_j,
+                                                    ksz * self.ch_i * self.ch_j))
+                        zc = tf.constant_initializer(0.)((bp, self.ah_j,
+                                                    ksz * self.ch_i * self.ch_j))
                         rl = []
 
                         for r in range(self.ah_j):
-                            rl.append(zr if r % ph else v[:, r // ph])
+                            rl.append(zr if r % ph else a[:, r // ph])
                         rs = K.stack(rl, axis=1)
                         cl = []
                         for c in range(self.aw_j):
                             cl.append(zc if c % pw else rs[:, :, c // pw])
-                        va = K.stack(cl, axis=-2)
+                        aa = K.stack(cl, axis=-2)
 
-                    va = K.spatial_2d_padding(va, ((ph, ph), (pw, pw)),
-                                              data_format='channels_last')
 
-                    vp = tf.extract_image_patches(va, (1, self.kernel_size[0],
-                                                       self.kernel_size[1], 1),
-                                                  (1, 1, 1, 1),
-                                                  (1, 1, 1, 1), 'VALID')
-                    vp = K.reshape(vp, (-1, self.h_i*self.w_i, self.kernel_size[0]*
-                                        self.kernel_size[1],
-                                        self.ch_j, 1, self.n_j))
-                    vp = K.reverse(vp, axes=[2])
+                    aa = K.spatial_2d_padding(aa, ((ph, ph), (pw, pw)),
+                                                          data_format='channels_last')
+                    pa = tf.extract_image_patches(aa, (1,)+self.kernel_size+(1,),
+                                                      (1, 1, 1, 1,), #(1,)+strides+(1,),
+                                                      (1, 1, 1, 1,),
+                                                      'VALID')
+                    pa = K.reshape(pa, (-1, self.h_i*self.w_i,
+                                        ksz, ksz, self.ch_i, self.ch_j))
 
-                    vp = K.reshape(vp, (-1, self.h_i*self.w_i,
-                                        self.kernel_size[0]*
-                                        self.kernel_size[1]*
-                                        self.ch_j, 1, self.n_j))
+                    pal = []
+                    for n in range(ksz):
+                        pal.append(pa[:, :, n, ksz-1 - n])
+                    paa = K.stack(pal, axis=3)
 
-                    u_wo_g = K.reshape(u_wo_g, (-1, self.h_i*self.w_i, self.ch_i,
-                                                self.kernel_size[0]*
-                                                self.kernel_size[1]*
-                                                self.ch_j, self.n_j, 1))
-                    al = []
-                    for i in range(self.ch_i):
-                        al.append(K.batch_dot(vp, u_wo_g[:, :, i]))
-                    a = K.stack(al, axis=2)
-                    a = K.reshape(a, (-1, self.h_i*self.w_i*self.ch_i,
-                                      self.kernel_size[0]*
-                                      self.kernel_size[1]*self.ch_j))
-
-                    #b = K.update_add(b, a)  # WTF? It yields a result different from b = b + a
-                    b = b + a
+                    paa = K.reshape(paa, (-1, self.h_i*self.w_i*self.ch_i,
+                                          ksz*self.ch_j))
+                    b = b + paa
 
                 return v
 
-
-            finputs = K.reshape(inputs, (bt // bp, bp, self.h_i, self.w_i, self.ch_i, self.n_i))
-            v = fn(finputs)
-            #v = tf.map_fn(fn, finputs,
-            #              parallel_iterations=100, back_prop=True,
-            #              infer_shape=True)
+            v = tf.map_fn(rt, K.reshape(pt, (bt // bp, bp, self.h_j, self.w_j,
+                                             ksz * self.ch_i, self.n_i)),
+                          parallel_iterations=100, back_prop=True,
+                          infer_shape=False)
 
             outputs = v
             outputs = K.reshape(outputs, (-1, self.h_j, self.w_j,
@@ -298,6 +314,7 @@ class Conv2DCaps(Layer):
             'n_j': self.n_j,
             'kernel_size': self.kernel_size,
             'strides': self.strides,
+            'b_alphas': self.b_alphas,
             #'padding': self.padding,
             #'data_format': self.data_format,
             #'dilation_rate': self.dilation_rate,
@@ -313,6 +330,7 @@ class Conv2DCaps(Layer):
 class DenseCaps(Layer):
     def __init__(self, ch_j, n_j,
                  r_num=1,
+                 b_alphas=[8, 8, 8],
                  kernel_initializer='glorot_uniform',
                  kernel_regularizer=None,
                  activity_regularizer=None,
@@ -321,9 +339,10 @@ class DenseCaps(Layer):
         if 'input_shape' not in kwargs and 'input_dim' in kwargs:
             kwargs['input_shape'] = (kwargs.pop('input_dim'),)
         super(DenseCaps, self).__init__(**kwargs)
-        self.ch_j = ch_j  # Number of capsules in layer J
-        self.n_j = n_j  # Number of neurons in a capsule in J
+        self.ch_j = ch_j  # number of capsules in layer J
+        self.n_j = n_j  # number of neurons in a capsule in J
         self.r_num = r_num
+        self.b_alphas = b_alphas
         self.kernel_initializer = initializers.get(kernel_initializer)
         self.kernel_regularizer = regularizers.get(kernel_regularizer)
         self.activity_regularizer = regularizers.get(activity_regularizer)
@@ -363,7 +382,7 @@ class DenseCaps(Layer):
                 ub = K.reshape(ub, (-1, self.ch_i, self.ch_j, self.n_j))
                 ub_wo_g = K.stop_gradient(ub)
                 for r in range(self.r_num):
-                    c = K.expand_dims(K.softmax(b * 8)) * self.ch_j # distribution of weighs of capsules in I across capsules in J
+                    c = K.expand_dims(K.softmax(b * self.b_alphas[r])) * self.ch_j # distribution of weighs of capsules in I across capsules in J
                     c = K.stop_gradient(c)
                     if r == self.r_num - 1:
                         cub = c * ub
@@ -384,9 +403,15 @@ class DenseCaps(Layer):
                 return v
 
             u = K.reshape(u, (-1, self.ch_i* self.ch_j * self.n_j))
-            outputs = tf.map_fn(rt, u,
-                          parallel_iterations=1000, back_prop=True,
-                          infer_shape=False)
+
+            global useGPU
+
+            if useGPU:
+                outputs = rt(u)
+            else:
+                outputs = tf.map_fn(rt, u,
+                                    parallel_iterations=100, back_prop=True,
+                                    infer_shape=False)
 
             outputs = K.reshape(outputs, (-1, self.ch_j, self.n_j))
 
@@ -400,6 +425,7 @@ class DenseCaps(Layer):
             'ch_j': self.ch_j,
             'n_j': self.n_j,
             'r_num': self.r_num,
+            'b_alphas': self.b_alphas,
             'kernel_initializer': initializers.serialize(self.kernel_initializer),
             'kernel_regularizer': regularizers.serialize(self.kernel_regularizer),
             'activity_regularizer': regularizers.serialize(self.activity_regularizer),
