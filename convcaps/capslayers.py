@@ -155,7 +155,7 @@ class Conv2DCaps(Layer):
                                           self.ch_j, self.n_j))))
 
         else:
-            bt = K.int_shape(inputs)[0]
+            bt = K.shape(inputs)[0]
             ksz = self.kernel_size[0]*self.kernel_size[1]
 
             xr = K.reshape(inputs, (-1, self.h_i, self.w_i,
@@ -173,7 +173,19 @@ class Conv2DCaps(Layer):
 
             global useGPU
 
-            bp = bt // 2 if useGPU else 2
+            # it sometimes works faster on GPU when batch is devided into two parts
+            # bp = K.expand_dims(bt // 2, axis=0) if useGPU else K.constant([2], dtype=tf.int32)
+            bp = K.expand_dims(bt // 1, axis=0) if useGPU else K.constant([2], dtype=tf.int32)
+
+            if self.strides != (1, 1):
+                zr_shape = K.concatenate([bp, K.constant([self.w_j,
+                                       ksz * self.ch_i * self.ch_j],
+                                      dtype=tf.int32)])
+                zr = tf.zeros(shape=zr_shape)
+                zc_shape = K.concatenate([bp, K.constant([self.ah_j,
+                                       ksz * self.ch_i * self.ch_j],
+                                      dtype=tf.int32)])
+                zc = tf.zeros(shape=zc_shape)
 
             def rt(ptb):
                 ptb = K.reshape(ptb, (-1, ksz * self.ch_i, self.n_i))
@@ -186,45 +198,52 @@ class Conv2DCaps(Layer):
                         ul.append(K.dot(ptb[:, i], wr[i]))
                     ub = K.stack(ul, axis=1)
 
-                b = tf.constant_initializer(0.)((bp, self.h_i*self.w_i*self.ch_i,
-                                           ksz * self.ch_j))
+                #b = tf.constant_initializer(0.)((bp, self.h_i*self.w_i*self.ch_i,
+                #                           ksz * self.ch_j))
+                b = 0.0
 
                 j_all = self.h_j*self.w_j*self.ch_j
                 j_add = j_all - ksz * self.ch_j
 
                 for r in range(self.r_num):
                     ex = K.exp(b * self.b_alphas[r])
-                    c = ex / ((K.sum(ex, axis=-1, keepdims=True) + K.epsilon()) +
-                              j_add) * j_all
-                    c = K.reshape(c, (-1, self.h_i, self.w_i, self.ch_i *
-                                      ksz * self.ch_j))
-                    c = K.stop_gradient(c)
+                    if r > 0:
+                        c = ex / ((K.sum(ex, axis=-1, keepdims=True) + K.epsilon()) +
+                                  j_add) * j_all
+                        c = K.reshape(c, (-1, self.h_i, self.w_i, self.ch_i *
+                                          ksz * self.ch_j))
+                        c = K.stop_gradient(c)
 
-                    pc = tf.extract_image_patches(c, (1,)+self.kernel_size+(1,),
-                                                      (1,)+self.strides+(1,),
-                                                      (1, 1, 1, 1,),
-                                                      'VALID')
-                    pc = K.reshape(pc, (-1, self.h_j, self.w_j, ksz,
-                                        self.ch_i, self.kernel_size[0]*
-                                        self.kernel_size[1], self.ch_j))
-                    pcl = []
-                    for n in range(ksz):
-                        pcl.append(pc[:, :, :, n, :, self.kernel_size[0]*
-                                      self.kernel_size[1]-1 - n])
-                    pcc = K.stack(pcl, axis=3)
+                        pc = tf.extract_image_patches(c, (1,)+self.kernel_size+(1,),
+                                                          (1,)+self.strides+(1,),
+                                                          (1, 1, 1, 1,),
+                                                          'VALID')
+                        pc = K.reshape(pc, (-1, self.h_j, self.w_j, ksz,
+                                            self.ch_i, self.kernel_size[0]*
+                                            self.kernel_size[1], self.ch_j))
+                        pcl = []
+                        for n in range(ksz):
+                            pcl.append(pc[:, :, :, n, :, self.kernel_size[0]*
+                                          self.kernel_size[1]-1 - n])
+                        pcc = K.stack(pcl, axis=3)
 
-                    if useGPU:
-                        pcc = K.reshape(pcc, (-1, self.h_j * self.w_j* ksz *
-                                              self.ch_i * self.ch_j, 1))
-                        ub = K.reshape(ub, (bp, -1, self.n_j))
-                        cu = pcc * ub
+                        if useGPU:
+                            pcc = K.reshape(pcc, (-1, self.h_j * self.w_j* ksz *
+                                                  self.ch_i * self.ch_j, 1))
+                            ub = K.reshape(ub, (-1, self.h_j * self.w_j *
+                                                ksz * self.ch_i * self.ch_j,
+                                                self.n_j))
+                            cu = pcc * ub
+                        else:
+                            pcc = K.reshape(pcc, (-1, 1))
+                            ub = K.reshape(ub, (-1, self.n_j, 1))
+                            cul = []
+                            for n in range(self.n_j):
+                                cul.append(ub[:, n] * pcc)
+                            cu = K.stack(cul, axis=-2)
+
                     else:
-                        pcc = K.reshape(pcc, (-1, 1))
-                        ub = K.reshape(ub, (-1, self.n_j, 1))
-                        cul = []
-                        for n in range(self.n_j):
-                            cul.append(ub[:, n] * pcc)
-                        cu = K.stack(cul, axis=-2)
+                        cu = ub
 
                     cu = K.reshape(cu, (-1, self.h_j*self.w_j,
                                         ksz*self.ch_i, self.ch_j, self.n_j))
@@ -260,10 +279,6 @@ class Conv2DCaps(Layer):
                     if self.strides == (1, 1):
                         aa = a
                     else:
-                        zr = tf.constant_initializer(0.)((bp, self.w_j,
-                                                    ksz * self.ch_i * self.ch_j))
-                        zc = tf.constant_initializer(0.)((bp, self.ah_j,
-                                                    ksz * self.ch_i * self.ch_j))
                         rl = []
 
                         for r in range(self.ah_j):
@@ -295,10 +310,12 @@ class Conv2DCaps(Layer):
 
                 return v
 
-            v = tf.map_fn(rt, K.reshape(pt, (bt // bp, bp, self.h_j, self.w_j,
+            v = tf.map_fn(rt, K.reshape(pt, (-1, bp[0], self.h_j, self.w_j,
                                              ksz * self.ch_i, self.n_i)),
                           parallel_iterations=100, back_prop=True,
                           infer_shape=False)
+
+
 
             outputs = v
             outputs = K.reshape(outputs, (-1, self.h_j, self.w_j,
@@ -377,13 +394,16 @@ class DenseCaps(Layer):
             u = K.reshape(u, (-1, self.ch_i, self.ch_j, self.n_j))
 
             def rt(ub):
-                # b = K.zeros((self.ch_i, self.ch_j))
-                b = tf.constant_initializer(0.)((self.ch_i, self.ch_j))
                 ub = K.reshape(ub, (-1, self.ch_i, self.ch_j, self.n_j))
                 ub_wo_g = K.stop_gradient(ub)
+                b = 0.0
                 for r in range(self.r_num):
-                    c = K.expand_dims(K.softmax(b * self.b_alphas[r])) * self.ch_j # distribution of weighs of capsules in I across capsules in J
-                    c = K.stop_gradient(c)
+                    if r > 0:
+                        c = K.expand_dims(K.softmax(b * self.b_alphas[r])) * self.ch_j # distribution of weighs of capsules in I across capsules in J
+                        c = K.stop_gradient(c)
+                    else:
+                        c = 1.0
+
                     if r == self.r_num - 1:
                         cub = c * ub
                     else:
