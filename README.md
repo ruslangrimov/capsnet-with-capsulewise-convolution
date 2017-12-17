@@ -170,4 +170,4 @@ Test accuracy:  0.73925
 
 ### Conclusion
 We trained both models for 4 epochs on translated digits from MNIST. The custom CNN achieved better result by the last epoch.
-Accuracy of the CNN model on affNIST set also was better than accuracy of CapsNet model: 0.74 vs. 0.79.
+Accuracy of the CNN model on affNIST set also was better than accuracy of CapsNet model: 0.74 vs. 0.70.
