@@ -92,7 +92,7 @@ This model achieved 0.9772 accuracy on train set and 0.9796 on validation set
 ### Results on affNIST
 ```
 Test score:  3.78991742519
-Test accuracy:  **0.704396875**
+Test accuracy:  0.704396875
 ```
 
 ### Train CNN with 3 conv layers and two dense layers
@@ -165,9 +165,9 @@ This model achieved 0.9820 accuracy on train set and 0.9851 on validation set
 ### Results on affNIST
 ```
 Test score:  0.965831407426
-Test accuracy:  **0.73925**
+Test accuracy:  0.73925
 ```
 
 ### Conclusion
 We trained both models for 4 epochs on translated digits from MNIST. The custom CNN achieved better result by the last epoch.
-Accuracy of the CNN model on affNIST set also was better than accuracy of CapsNet model.
+Accuracy of the CNN model on affNIST set also was better than accuracy of CapsNet model: 0.74 vs. 0.79.
