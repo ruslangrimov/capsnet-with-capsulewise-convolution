@@ -21,6 +21,10 @@ from keras import regularizers
 from keras import losses
 import numpy as np
 import tensorflow as tf
+import os
+
+import convcaps.capslayers
+convcaps.capslayers.useGPU = False
 
 img_rows, img_cols = 28, 28
 num_classes = 10
@@ -42,21 +46,17 @@ x_test /= 255
 y_train = to_categorical(y_train, num_classes)
 y_test = to_categorical(y_test, num_classes)
 
-batch_size = 32
-num_epochs = 10
-
-
 # assemble encoder
-inp = Input(batch_shape=(batch_size,)+input_shape)
+inp = Input(shape=input_shape)
 l = inp
 
 l = Conv2D(16, (5, 5), strides=(2, 2), activation='relu')(l)  # common conv layer
 l = BatchNormalization()(l)
 l = ConvertToCaps()(l)
-l = Conv2DCaps(4, 4, (3, 3), (2, 2), r_num=1)(l)
-l = Conv2DCaps(2, 6, (3, 3), (2, 2), r_num=1)(l)
+l = Conv2DCaps(6, 4, (3, 3), (2, 2), r_num=1, b_alphas=[1, 1, 1])(l)
+l = Conv2DCaps(4, 6, (3, 3), (1, 1), r_num=1, b_alphas=[1, 1, 1])(l)
 l = FlattenCaps()(l)  # transform to a dense caps layer
-l = DenseCaps(10, 8, r_num=3)(l)
+l = DenseCaps(10, 8, r_num=3, b_alphas=[1, 2, 2])(l)
 l = CapsToScalars()(l)
 
 m_capsnet = Model(inputs=inp, outputs=l, name='capsnet')
@@ -83,10 +83,13 @@ l = Dense(784, activation='sigmoid')(l)
 m_decoder = Model(inputs=inp, outputs=l, name='decoder')
 m_decoder.summary()
 
+batch_size = 32
+num_epochs = 5
+
 # assemble final model
 model = Model(inputs=m_capsnet.input,
               outputs=[m_capsnet.output, m_decoder(m_capsnet.layers[7].output)],
-              name='encdec')
+              name='demo_encdec')
 
 # objective function for encoder
 def caps_objective(y_true, y_pred):
@@ -98,23 +101,18 @@ def dec_objective(x_true, x_decoded):
 
 optimizer = optimizers.Adam(lr=0.001)
 model.compile(loss=[caps_objective, dec_objective],
-              loss_weights=[1, 0.05],
+              loss_weights=[1, 1],
               optimizer=optimizer,
               metrics=['accuracy'])
 
-# we choose 57600 examples because validation set should be divisible by 32
-x_train = x_train[:57600]
-y_train = y_train[:57600]
+w_path = os.path.join('weights', model.name)
+
+if not os.path.exists(w_path):
+    os.makedirs(w_path)
+
+f_name = os.path.join(w_path, 'weights.{epoch:02d}.hdf5')
 
 model.fit(x_train, [y_train, x_train.reshape((-1, 28*28))],
           batch_size=batch_size, epochs=num_epochs, initial_epoch=0,
           verbose=1, validation_split=0.09,
-          callbacks=[
-                     #ModelCheckpoint('cc_weights.{epoch:02d}-{caps_to_scalars_170_loss:.4f}-{caps_to_scalars_170_acc:.4f}.hdf5',
-                     #                monitor='caps_to_scalars_170_loss,caps_to_scalars_170_acc', verbose=0),
-                     #TensorBoard(log_dir='/opt/notebooks/logs/tensorflow/',
-                     #            histogram_freq=1,
-                     #            write_grads=True,
-                     #            batch_size=batch_size,
-                     #            write_images=True)
-                     ])
+          callbacks=[ModelCheckpoint(f_name, verbose=0)])

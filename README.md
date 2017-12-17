@@ -1,5 +1,20 @@
 # CapsNet with capsule-wise convolution
 
+## Project structure 
+
+```naive.py``` - naive implementation of a capslayer written on numpy
+
+```capsnet``` - package with classes
+
+```weights``` - weights of some already trained models
+
+```demo.py``` - CapsNet as an encoder and three layer FC net as encoder
+
+```generating-with-decoder.ipynb``` - notebook which shows what the individual dimensions of a capsule represent
+
+```affNIST_test_capsnet.ipynb``` and ```affNIST_test_cnn.ipynb``` - experiment where we compare accuracy of CapsNet and custom CNN, whick were trained on MNIST, on affNIST. See below
+
+
 ## Train on padded and translated MNIST and then test on affNIST
 
 You should download affNIST from [here](http://www.cs.toronto.edu/~tijmen/affNIST/32x/transformed/test.mat.zip) and extract it into ./affnist/test.mat.
