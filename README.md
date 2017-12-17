@@ -2,6 +2,8 @@
 
 ## Train on padded and translated MNIST and then test on affNIST
 
+You should download affNIST from [here](http://www.cs.toronto.edu/~tijmen/affNIST/32x/transformed/test.mat.zip) and unzip it into ./affnist/test.mat.
+
 ### Generate train data based on standard MNIST dataset
 
 Create dataset in which each example is an MNIST digit placed randomly on a black background of 40×40 pixels
@@ -93,5 +95,79 @@ Test score:  3.78991742519
 Test accuracy:  **0.704396875**
 '''
 
+### Train CNN with 3 conv layers and two dense layers
 
+'''python
+l2 = regularizers.l2(l=0.001)
 
+inp = Input(shape=input_shape)
+l = inp
+
+l = Conv2D(8, (3, 3), activation='relu', kernel_regularizer=l2)(l)
+l = BatchNormalization()(l)
+l = MaxPooling2D((2, 2))(l)
+l = Conv2D(16, (3, 3), activation='relu', kernel_regularizer=l2)(l) 
+l = BatchNormalization()(l)
+l = MaxPooling2D((2, 2))(l)
+l = Conv2D(32, (3, 3), activation='relu', kernel_regularizer=l2)(l)
+l = BatchNormalization()(l)
+l = MaxPooling2D((2, 2))(l)
+l = Flatten()(l)
+l = Dense(72, activation='relu', kernel_regularizer=l2)(l)
+l = BatchNormalization()(l)
+l = Dense(10, activation='softmax', kernel_regularizer=l2)(l)
+
+model = Model(inputs=inp, outputs=l, name='40x40_input_cnn')
+model.summary()
+'''
+
+'''
+_________________________________________________________________
+Layer (type)                 Output Shape              Param #   
+=================================================================
+input_1 (InputLayer)         (None, 40, 40, 1)         0         
+_________________________________________________________________
+conv2d_1 (Conv2D)            (None, 38, 38, 8)         80        
+_________________________________________________________________
+batch_normalization_1 (Batch (None, 38, 38, 8)         32        
+_________________________________________________________________
+max_pooling2d_1 (MaxPooling2 (None, 19, 19, 8)         0         
+_________________________________________________________________
+conv2d_2 (Conv2D)            (None, 17, 17, 16)        1168      
+_________________________________________________________________
+batch_normalization_2 (Batch (None, 17, 17, 16)        64        
+_________________________________________________________________
+max_pooling2d_2 (MaxPooling2 (None, 8, 8, 16)          0         
+_________________________________________________________________
+conv2d_3 (Conv2D)            (None, 6, 6, 32)          4640      
+_________________________________________________________________
+batch_normalization_3 (Batch (None, 6, 6, 32)          128       
+_________________________________________________________________
+max_pooling2d_3 (MaxPooling2 (None, 3, 3, 32)          0         
+_________________________________________________________________
+flatten_1 (Flatten)          (None, 288)               0         
+_________________________________________________________________
+dense_1 (Dense)              (None, 72)                20808     
+_________________________________________________________________
+batch_normalization_4 (Batch (None, 72)                288       
+_________________________________________________________________
+dense_2 (Dense)              (None, 10)                730       
+=================================================================
+Total params: 27,938
+Trainable params: 27,682
+Non-trainable params: 256
+'''
+
+See affNIST_test_cpp.ipynb fore more information
+
+This model achieved 0.9820 accuracy on train set and 0.9851 on validation set
+
+### Results on affNIST
+'''
+Test score:  0.965831407426
+Test accuracy:  **0.73925**
+'''
+
+### Conclusion
+We trained both models for 4 epochs on translated digits from MNIST. The custom CNN achieved better result by the last epoch.
+Accuracy of the CNN model on affNIST set also was better than accuracy of CapsNet model.
