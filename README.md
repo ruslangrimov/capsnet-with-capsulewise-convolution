@@ -2,14 +2,14 @@
 
 ## Train on padded and translated MNIST and then test on affNIST
 
-You should download affNIST from [here](http://www.cs.toronto.edu/~tijmen/affNIST/32x/transformed/test.mat.zip) and unzip it into ./affnist/test.mat.
+You should download affNIST from [here](http://www.cs.toronto.edu/~tijmen/affNIST/32x/transformed/test.mat.zip) and extract it into ./affnist/test.mat.
 
 ### Generate train data based on standard MNIST dataset
 
 Create dataset in which each example is an MNIST digit placed randomly on a black background of 40×40 pixels
 
 Below is content of generate_datasets.py
-'''python
+```python
 import numpy as np
 from keras.datasets import mnist
 
@@ -28,11 +28,11 @@ np.save('generateddatasets/x_train_only_translation.npy',
         x_train.astype(np.uint8))
 np.save('generateddatasets/y_train_only_translation.npy',
         y_train.astype(np.uint8))
-'''
+```
 
 ### Train CapsNet with 1 conv layer, 4 convcaps layers and 1 dense caps layer with routing only on the last layer
 
-'''python
+```python
 l2 = regularizers.l2(l=0.001)
 
 inp = Input(shape=input_shape)
@@ -52,9 +52,9 @@ l = CapsToScalars()(l)
 
 model = Model(inputs=inp, outputs=l, name='40x40_input_capsnet')
 model.summary()
-'''
+```
 
-'''
+```
 _________________________________________________________________
 Layer (type)                 Output Shape              Param #   
 =================================================================
@@ -83,21 +83,21 @@ caps_to_scalars_2 (CapsToSca (None, 10)                0
 Total params: 25,992
 Trainable params: 25,960
 Non-trainable params: 32
-'''
+```
 
 See affNIST_test_capsnet.ipynb fore more information
 
 This model achieved 0.9772 accuracy on train set and 0.9796 on validation set
 
 ### Results on affNIST
-'''
+```
 Test score:  3.78991742519
 Test accuracy:  **0.704396875**
-'''
+```
 
 ### Train CNN with 3 conv layers and two dense layers
 
-'''python
+```python
 l2 = regularizers.l2(l=0.001)
 
 inp = Input(shape=input_shape)
@@ -119,9 +119,9 @@ l = Dense(10, activation='softmax', kernel_regularizer=l2)(l)
 
 model = Model(inputs=inp, outputs=l, name='40x40_input_cnn')
 model.summary()
-'''
+```
 
-'''
+```
 _________________________________________________________________
 Layer (type)                 Output Shape              Param #   
 =================================================================
@@ -156,17 +156,17 @@ dense_2 (Dense)              (None, 10)                730
 Total params: 27,938
 Trainable params: 27,682
 Non-trainable params: 256
-'''
+```
 
 See affNIST_test_cpp.ipynb fore more information
 
 This model achieved 0.9820 accuracy on train set and 0.9851 on validation set
 
 ### Results on affNIST
-'''
+```
 Test score:  0.965831407426
 Test accuracy:  **0.73925**
-'''
+```
 
 ### Conclusion
 We trained both models for 4 epochs on translated digits from MNIST. The custom CNN achieved better result by the last epoch.
